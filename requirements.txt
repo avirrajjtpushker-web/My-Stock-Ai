@@ -1,5 +1,7 @@
-streamlit
-yfinance
-pandas
-pandas_ta
-plotly
+streamlit>=1.32.0
+yfinance>=0.2.38
+pandas>=2.0.0
+pandas-ta>=0.3.14b
+numpy>=1.26.0
+feedparser>=6.0.10
+nltk>=3.8.1
