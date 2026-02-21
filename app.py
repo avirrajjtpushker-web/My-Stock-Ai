@@ -42,16 +42,19 @@ def add_technicals(df):
     # RSI
     df['RSI'] = ta.rsi(df['Close'], length=14)
     
-    # MACD
+    # MACD (New Safe Method)
     macd = ta.macd(df['Close'])
-    df['MACD'] = macd['MACD_12_26_9']
-    df['MACD_Signal'] = macd['MACDs_12_26_9']
+    # Yahan hum column ka naam dhundne ki jagah pehle 2 columns utha lenge
+    df['MACD'] = macd.iloc[:, 0]        # MACD Line
+    df['MACD_Signal'] = macd.iloc[:, 1] # Signal Line
     
     # SuperTrend
     sti = ta.supertrend(df['High'], df['Low'], df['Close'], length=7, multiplier=3)
-    df['ST'] = sti['SUPERT_7_3.0']
+    # SuperTrend ke liye bhi pehla column
+    df['ST'] = sti.iloc[:, 0]
     
     return df
+
 
 # App Header
 st.title("🦸‍♂️ Buffett + Technical AI Screener")
