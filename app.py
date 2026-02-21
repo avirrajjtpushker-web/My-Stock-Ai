@@ -7,7 +7,7 @@ import feedparser
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-# --- SETUP (Ye bas ek baar chalta hai) ---
+# --- SETUP ---
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
@@ -15,7 +15,6 @@ except LookupError:
 
 sia = SentimentIntensityAnalyzer()
 
-# Page ka naam aur style set karna
 st.set_page_config(page_title="Ultimate Pro Trader", page_icon="🚀", layout="wide")
 
 st.markdown("""
@@ -27,13 +26,15 @@ st.markdown("""
     .badge-wait { background-color: #333; color: #aaa; padding: 3px 8px; border-radius: 5px; }
     .news-title { color: #58a6ff; font-weight: bold; text-decoration: none; font-size: 16px; }
     .impact-msg { color: #d2a8ff; font-size: 13px; margin-top: 5px; border-left: 3px solid #d2a8ff; padding-left: 8px; }
-    .silver-box { border: 2px solid #silver; background-color: #1a1a1a; }
+    .silver-box { border: 2px solid #C0C0C0; background-color: #1a1a1a; }
 </style>
 """, unsafe_allow_html=True)
 
+# FIX: was '#silver' which is invalid CSS; changed to actual silver hex color #C0C0C0
+
 st.title("🚀 ULTIMATE TRADER: Scanner + News AI")
 
-# --- PART 1: DATA CONFIGURATION (Silver ko Special Priority di hai) ---
+# --- PART 1: DATA CONFIGURATION ---
 ASSETS = {
     "🇮🇳 INDICES": {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK"},
     "🪙 CRYPTO": {"BITCOIN": "BTC-USD", "ETHEREUM": "ETH-USD", "SOLANA": "SOL-USD", "XRP": "XRP-USD"},
@@ -44,7 +45,7 @@ ALL_TICKERS = []
 for cat in ASSETS.values():
     ALL_TICKERS.extend(cat.values())
 
-# --- PART 2: FUNCTIONS (Dimag wala kaam) ---
+# --- PART 2: FUNCTIONS ---
 
 @st.cache_data(ttl=60)
 def fetch_data(tickers, period, interval):
@@ -53,73 +54,68 @@ def fetch_data(tickers, period, interval):
     return data
 
 def get_signal(df, ticker_name=""):
-    # Ye function batata hai ki Buy karna hai ya Sell
-    if df.empty or len(df) < 50: return None
-    
-    # 1. Standard Indicators
-    df['EMA_50'] = df.ta.ema(length=50)
-    df['EMA_20'] = df.ta.ema(length=20) # Renko Scalper ke liye
-    df['RSI'] = df.ta.rsi(length=14)
-    df['ATR'] = df.ta.atr(length=14)
-    
-    # 2. Supertrend (Trend Direction ke liye)
-    st_data = df.ta.supertrend(length=10, multiplier=3)
-    st_dir_col = [c for c in st_data.columns if "SUPERTd_" in c][0]
-    df['Trend'] = st_data[st_dir_col] # 1 = Up, -1 = Down
+    if df.empty or len(df) < 50:
+        return None
 
-    # 3. ADX for TREND STRENGTH (Jo tumne maanga tha)
-    adx_data = df.ta.adx(length=14)
+    df = df.copy()
+
+    # Indicators
+    df['EMA_50'] = ta.ema(df['Close'], length=50)
+    df['EMA_20'] = ta.ema(df['Close'], length=20)
+    df['RSI'] = ta.rsi(df['Close'], length=14)
+    atr_series = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+    df['ATR'] = atr_series
+
+    # Supertrend
+    st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=10, multiplier=3)
+    if st_data is None or st_data.empty:
+        return None
+    st_dir_col = [c for c in st_data.columns if "SUPERTd_" in c]
+    if not st_dir_col:
+        return None
+    df['Trend'] = st_data[st_dir_col[0]]
+
+    # ADX
+    adx_data = ta.adx(df['High'], df['Low'], df['Close'], length=14)
     if adx_data is not None and not adx_data.empty:
-        # ADX column dhoondo (library kabhi kabhi naam change karti hai)
-        adx_col = [c for c in adx_data.columns if "ADX" in c][0]
-        current_adx = adx_data[adx_col].iloc[-1]
+        adx_col = [c for c in adx_data.columns if c.startswith("ADX_")]
+        current_adx = adx_data[adx_col[0]].iloc[-1] if adx_col else 0
     else:
         current_adx = 0
 
-    # 4. Z-Score (Screenshot ka niche wala indicator approximate karne ke liye)
+    # Z-Score
     df['Z_Score'] = (df['Close'] - df['Close'].rolling(20).mean()) / df['Close'].rolling(20).std()
-    z_score = df['Z_Score'].iloc[-1]
+
+    # Check for NaN in key columns
+    if df[['Close', 'EMA_20', 'EMA_50', 'RSI', 'ATR', 'Trend', 'Z_Score']].iloc[-1].isna().any():
+        return None
 
     close = df['Close'].iloc[-1]
     trend = df['Trend'].iloc[-1]
     rsi = df['RSI'].iloc[-1]
     atr = df['ATR'].iloc[-1]
     ema20 = df['EMA_20'].iloc[-1]
-    
-    # Order Block (Support/Resistance)
+    z_score = df['Z_Score'].iloc[-1]
+
     support = df['Low'].tail(20).min()
     resistance = df['High'].tail(20).max()
-    
-    # --- LOGIC BUILDER ---
+
     action = "WAIT"
     color = "grey"
-    
-    # Logic for SILVER (Renko/Scalper imitation)
-    if "SILVER" in ticker_name or "SI=F" in ticker_name:
-        # Silver Logic: Supertrend UP + Price > EMA 20 + ADX Strong
+    sl = 0
+    tgt = 0
+
+    if "SILVER" in ticker_name.upper():
         if trend == 1 and close > ema20:
-            if current_adx > 20: # Trend Strong hai
-                action = "BUY SILVER (STRONG) 🚀"
-                color = "#00ff00"
-            else:
-                action = "BUY SILVER (WEAK) ↗️"
-                color = "#90ee90" # Light Green
-            sl = close - (atr * 2) # Silver volatile hai, bada SL
+            action = "BUY SILVER (STRONG) 🚀" if current_adx > 20 else "BUY SILVER (WEAK) ↗️"
+            color = "#00ff00" if current_adx > 20 else "#90ee90"
+            sl = close - (atr * 2)
             tgt = close + (atr * 4)
-        
         elif trend == -1 and close < ema20:
-            if current_adx > 20:
-                action = "SELL SILVER (STRONG) 🩸"
-                color = "#ff0000"
-            else:
-                action = "SELL SILVER (WEAK) ↘️"
-                color = "#ff7f7f" # Light Red
+            action = "SELL SILVER (STRONG) 🩸" if current_adx > 20 else "SELL SILVER (WEAK) ↘️"
+            color = "#ff0000" if current_adx > 20 else "#ff7f7f"
             sl = close + (atr * 2)
             tgt = close - (atr * 4)
-        else:
-            sl = 0; tgt = 0
-            
-    # Logic for Others (Normal)
     else:
         if trend == 1 and close > df['EMA_50'].iloc[-1] and rsi > 50:
             action = "BUY / LONG 🚀"
@@ -131,21 +127,20 @@ def get_signal(df, ticker_name=""):
             color = "#ff0000"
             sl = close + (atr * 1.5)
             tgt = close - (atr * 3)
-        else:
-            sl = 0; tgt = 0
 
-    # Strength Text
     strength_txt = "Weak"
-    if current_adx > 25: strength_txt = "Strong"
-    if current_adx > 50: strength_txt = "Explosive 🔥"
+    if current_adx > 25:
+        strength_txt = "Strong"
+    if current_adx > 50:
+        strength_txt = "Explosive 🔥"
 
     return {
-        "action": action, 
-        "color": color, 
-        "price": close, 
-        "sl": sl, 
-        "tgt": tgt, 
-        "supp": support, 
+        "action": action,
+        "color": color,
+        "price": close,
+        "sl": sl,
+        "tgt": tgt,
+        "supp": support,
         "res": resistance,
         "strength": strength_txt,
         "adx": current_adx,
@@ -161,26 +156,32 @@ RSS_FEEDS = {
 
 def analyze_news_sentiment(text):
     score = sia.polarity_scores(text)['compound']
-    if score > 0.05: return "BULLISH", "badge-bull"
-    elif score < -0.05: return "BEARISH", "badge-bear"
+    if score > 0.05:
+        return "BULLISH", "badge-bull"
+    elif score < -0.05:
+        return "BEARISH", "badge-bear"
     return "NEUTRAL", "badge-wait"
 
 def get_impact(text):
     text = text.lower()
-    if "inflation" in text or "rate" in text: return "⚠️ Impact: BANKNIFTY & LOANS"
-    if "oil" in text: return "⚠️ Impact: PAINTS & TYRES"
-    if "bitcoin" in text or "crypto" in text: return "⚠️ Impact: CRYPTO MARKET"
-    if "gold" in text or "silver" in text: return "⚠️ Impact: PRECIOUS METALS"
+    if "inflation" in text or "rate" in text:
+        return "⚠️ Impact: BANKNIFTY & LOANS"
+    if "oil" in text:
+        return "⚠️ Impact: PAINTS & TYRES"
+    if "bitcoin" in text or "crypto" in text:
+        return "⚠️ Impact: CRYPTO MARKET"
+    if "gold" in text or "silver" in text:
+        return "⚠️ Impact: PRECIOUS METALS"
     return ""
 
-# --- PART 3: MAIN APP UI (Jo screen pe dikhega) ---
+# --- PART 3: MAIN APP UI ---
 
 tab1, tab2 = st.tabs(["📊 MARKET SCANNER", "🌍 NEWS & SENTIMENT"])
 
 # === TAB 1: SCANNER ===
 with tab1:
     st.header("📈 Live Signals & Trend Strength")
-    
+
     col1, col2 = st.columns([3, 1])
     with col1:
         timeframe = st.selectbox("Timeframe Select Karo:", ["15m", "1h", "4h", "1d"])
@@ -188,9 +189,9 @@ with tab1:
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
             st.rerun()
-            
+
     tf_map = {"15m": "5d", "1h": "1mo", "4h": "1mo", "1d": "1y"}
-    
+
     with st.spinner("Market scan aur Trend Calculate ho raha hai..."):
         raw_data = fetch_data(ALL_TICKERS, period=tf_map[timeframe], interval=timeframe)
 
@@ -201,17 +202,16 @@ with tab1:
             idx = 0
             for name, symbol in tickers.items():
                 try:
-                    if len(ALL_TICKERS) > 1: df = raw_data[symbol].dropna()
-                    else: df = raw_data.dropna()
-                    
-                    # Pass ticker name specifically for Silver logic
+                    if len(ALL_TICKERS) > 1:
+                        df = raw_data[symbol].dropna()
+                    else:
+                        df = raw_data.dropna()
+
                     sig = get_signal(df, name)
-                    
+
                     if sig:
-                        # Styling adjustment for Silver
-                        box_style = "box"
-                        if "SILVER" in name: box_style = "box silver-box"
-                        
+                        box_style = "box silver-box" if "SILVER" in name else "box"
+
                         with cols[idx % 3]:
                             st.markdown(f"""
                             <div class="{box_style}">
@@ -234,30 +234,27 @@ with tab1:
                             </div>
                             """, unsafe_allow_html=True)
                         idx += 1
-                except Exception as e:
-                    # st.error(f"Error {name}: {e}") # Debugging ke liye
+                except Exception:
                     continue
             st.markdown("---")
 
 # === TAB 2: NEWS & SENTIMENT ===
 with tab2:
     st.header("📰 Global News & AI Analysis")
-    
+
     st.subheader("🌍 Global Fear Meter (Macro)")
     m_cols = st.columns(4)
     macro_ticks = ["^INDIAVIX", "^VIX", "DX-Y.NYB", "BZ=F"]
     macro_names = ["🇮🇳 INDIA VIX", "🇺🇸 US VIX", "💵 DOLLAR (DXY)", "🛢️ BRENT OIL"]
-    
+
     try:
         m_data = yf.download(macro_ticks, period="5d", interval="1d", group_by='ticker', progress=False)
         for i, tick in enumerate(macro_ticks):
             try:
                 curr = m_data[tick]['Close'].iloc[-1]
                 prev = m_data[tick]['Close'].iloc[-2]
-                chg = ((curr - prev)/prev)*100
+                chg = ((curr - prev) / prev) * 100
                 colr = "red" if chg > 0 else "green"
-                if "BZ" in tick or "DX" in tick: colr = "red" if chg > 0 else "green"
-                
                 with m_cols[i]:
                     st.markdown(f"""
                     <div class="box" style="text-align:center;">
@@ -266,90 +263,30 @@ with tab2:
                         <span style="color:{colr};">{chg:+.2f}%</span>
                     </div>
                     """, unsafe_allow_html=True)
-            except: pass
-    except: st.error("Macro Data Load Fail")
+            except Exception:
+                pass
+    except Exception:
+        st.error("Macro Data Load Fail")
 
     st.markdown("---")
-    <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Warren Buffett Magic Screener</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f9; padding: 20px; }
-        .box { background: white; padding: 20px; border-radius: 10px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
-        h1 { color: #2c3e50; font-size: 24px; }
-        p { color: #555; font-size: 14px; }
-        .btn { background-color: #27ae60; color: white; border: none; padding: 15px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; }
-        .btn:hover { background-color: #219150; }
-        #results { margin-top: 20px; text-align: left; display: none; }
-        .stock-card { background: #e8f8f5; border-left: 5px solid #1abc9c; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
-        .badge { background: #e74c3c; color: white; padding: 3px 6px; border-radius: 3px; font-size: 10px; }
-        .badge-green { background: #2ecc71; color: white; padding: 3px 6px; border-radius: 3px; font-size: 10px; }
-    </style>
-</head>
-<body>
 
-    <div class="box">
-        <h1>🦸‍♂️ Super Investor App</h1>
-        <p>Warren Buffett + Technical Analysis</p>
-        
-        <button class="btn" onclick="scanStocks()">Scan Stocks Now 🔍</button>
-
-        <div id="results">
-            <h3>✨ Aaj ke Super Stocks:</h3>
-            <p style="font-size: 12px; color: gray;">(Scanning Rules: Intrinsic Value low, RSI > 55, MACD +, Volume High)</p>
-            
-            <div class="stock-card">
-                <strong>TATA MOTORS</strong> <span class="badge-green">Strong Funda</span>
-                <p style="margin: 5px 0; font-size: 12px;">RSI: 62 | MACD: Bullish | SuperTrend: +ve</p>
-                <p style="margin: 0; font-size: 12px;">Promoter Holding: 46% 📈</p>
-            </div>
-
-            <div class="stock-card">
-                <strong>ITC LTD</strong> <span class="badge-green">Undervalued</span>
-                <p style="margin: 5px 0; font-size: 12px;">RSI: 58 | MACD: Bullish | SuperTrend: +ve</p>
-                <p style="margin: 0; font-size: 12px;">High Volume Breakout 🚀</p>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function scanStocks() {
-            // 5th class ke bache ko dikhane ke liye hum yahan fake loading effect dalenge
-            let btn = document.querySelector('.btn');
-            btn.innerHTML = "Scanning Live Market... ⏳";
-            btn.style.backgroundColor = "#f39c12";
-            
-            setTimeout(() => {
-                document.getElementById('results').style.display = 'block';
-                btn.innerHTML = "Scan Complete ✅";
-                btn.style.backgroundColor = "#27ae60";
-            }, 2000); // 2 second ka wait
-        }
-    </script>
-
-</body>
-</html>
+    # FIX: Removed the stray HTML block (lines 273-334 in original) that was
+    # accidentally pasted into the Python file here.
 
     news_opt = st.radio("Select News Source:", ["General", "Crypto", "India"], horizontal=True)
-    
+
     feed = feedparser.parse(RSS_FEEDS[news_opt])
     for entry in feed.entries[:10]:
         sent, badge_cls = analyze_news_sentiment(entry.title)
         impact = get_impact(entry.title)
-        
+
         st.markdown(f"""
         <div class="box">
             <div style="display:flex; justify-content:space-between;">
                 <a href="{entry.link}" target="_blank" class="news-title">{entry.title}</a>
                 <span class="{badge_cls}">{sent}</span>
             </div>
-            <div style="color:#888; font-size:12px; margin-top:5px;">🕒 {entry.published if 'published' in entry else 'Just Now'}</div>
+            <div style="color:#888; font-size:12px; margin-top:5px;">🕒 {entry.get('published', 'Just Now')}</div>
             <div class="impact-msg">{impact}</div>
         </div>
         """, unsafe_allow_html=True)
-
-        
-                    
